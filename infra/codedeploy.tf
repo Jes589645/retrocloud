@@ -3,7 +3,8 @@ resource "aws_codedeploy_app" "app" {
   compute_platform = "Server"
 }
 
-# El Service Role (CodeDeployServiceRole) lo creas tú aparte.
+# El Service Role (CodeDeployServiceRole) debe ser creado manualmente en IAM con los permisos para desplegar.
+# AWS niega todos los permisos a menos qeu explícitamente le digas lo contrario.
 resource "aws_codedeploy_deployment_group" "dg" {
   app_name              = aws_codedeploy_app.app.name
   deployment_group_name = "retrocloud-dg"
