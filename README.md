@@ -1,4 +1,4 @@
-# 🕹️ RetroCloud
+#  RetroCloud
 
 **RetroCloud** es una plataforma experimental de *cloud gaming retro* inspirada en servicios como *GeForce Now*, pero centrada en la emulación de consolas clásicas mediante **RetroBat**, ejecutándose sobre infraestructura de **AWS**.
 
@@ -6,7 +6,7 @@ El proyecto fue diseñado como **prueba de concepto universitaria**, sin ánimo 
 
 ---
 
-## 🚀 Arquitectura General
+##  Arquitectura General
 
 RetroCloud está compuesto por los siguientes módulos:
 
@@ -21,7 +21,7 @@ RetroCloud está compuesto por los siguientes módulos:
 
 ---
 
-## ⚙️ Infraestructura AWS
+##  Infraestructura AWS
 
 | Servicio | Recurso | Nombre / Región |
 |-----------|----------|----------------|
@@ -38,7 +38,7 @@ RetroCloud está compuesto por los siguientes módulos:
 
 ---
 
-## 🔐 Autenticación y sesiones
+##  Autenticación y sesiones
 
 - **Signup abierto**: cualquier usuario puede crear cuenta.
 - **Política de contraseñas**: mínimo 8 caracteres, mayúsculas, minúsculas y símbolos.
@@ -48,7 +48,7 @@ RetroCloud está compuesto por los siguientes módulos:
 
 ---
 
-## 🧩 Estructura del proyecto
+##  Estructura del proyecto
 
 retrocloud/
 ├── app/ # Backend FastAPI
@@ -73,7 +73,7 @@ retrocloud/
 
 ---
 
-## ⚡ Despliegue Automático (CI/CD)
+##  Despliegue Automático (CI/CD)
 
 El pipeline utiliza **GitHub Actions → AWS CodeDeploy**.
 
@@ -87,7 +87,7 @@ El pipeline utiliza **GitHub Actions → AWS CodeDeploy**.
 
 ---
 
-## 🌐 Rutas del Backend (FastAPI)
+##  Rutas del Backend (FastAPI)
 
 | Endpoint | Método | Descripción |
 |-----------|---------|-------------|
@@ -98,7 +98,7 @@ El pipeline utiliza **GitHub Actions → AWS CodeDeploy**.
 
 ---
 
-## 🧠 Dependencias principales
+##  Dependencias principales
 
 - **Python 3.11+**
 - `fastapi`, `uvicorn`, `boto3`, `passlib[bcrypt]`, `python-dotenv`
@@ -108,7 +108,7 @@ El pipeline utiliza **GitHub Actions → AWS CodeDeploy**.
 
 ---
 
-## 🗄️ Configuración de entorno (`.env`)
+##  Configuración de entorno (`.env`)
 
 Ejemplo (`app/.env.example`):
 
@@ -125,7 +125,7 @@ DCV_PORT=8443
 
 ---
 
-## 🧰 Variables de entorno (GitHub Secrets)
+##  Variables de entorno (GitHub Secrets)
 
 El workflow obtiene las credenciales desde el **Environment `.env`**:
 
@@ -148,7 +148,7 @@ El workflow obtiene las credenciales desde el **Environment `.env`**:
 
 ---
 
-## ⚠️ Limitaciones del prototipo
+##  Limitaciones del prototipo
 
 - La instancia `t3.micro` **no posee GPU**, por lo que el rendimiento gráfico está limitado (solo consolas 8/16-bit).
 - El certificado de DCV es **self-signed** (mostrar advertencia de navegador).
@@ -157,9 +157,9 @@ El workflow obtiene las credenciales desde el **Environment `.env`**:
 
 ---
 
-## 📚 Créditos y Licencia
+##  Créditos y Licencia
 
-Proyecto desarrollado por **Jesús (Jes589645)** como demostración académica.  
+Proyecto desarrollado como demostración académica.  
 RetroBat y NICE DCV son productos de sus respectivos creadores.  
 El uso de ROMs y BIOS es únicamente con fines educativos y bajo propiedad legal del usuario.
 
