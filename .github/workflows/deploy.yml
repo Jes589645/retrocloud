@@ -1,0 +1,32 @@
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: .env        # <-- usa el nombre exacto del Environment
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+      ROLE_ARN: ${{ secrets.ROLE_TO_ASSUME }}
+      APP_NAME: retrocloud-app
+      DG_NAME: retrocloud-dg
+      ARTIFACT_BUCKET: retrocloud-artifacts-use2
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.ROLE_ARN }}
+      - name: Zip artifact
+        run: |
+          mkdir -p out
+          zip -r out/release.zip app scripts appspec.yml
+      - name: Upload to S3
+        run: |
+          aws s3 cp out/release.zip s3://${{ env.ARTIFACT_BUCKET }}/releases/release-${{ github.sha }}.zip
+      - name: Create CodeDeploy deployment
+        run: |
+          aws deploy create-deployment \
+            --application-name $APP_NAME \
+            --deployment-group-name $DG_NAME \
+            --s3-location bucket=${{ env.ARTIFACT_BUCKET }},key=releases/release-${{ github.sha }}.zip,bundleType=zip

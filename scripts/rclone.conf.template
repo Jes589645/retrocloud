@@ -1,0 +1,5 @@
+[s3roms]
+type = s3
+provider = AWS
+env_auth = true
+region = us-east-2
