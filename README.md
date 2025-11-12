@@ -47,30 +47,6 @@ RetroCloud está compuesto por los siguientes módulos:
 - **Admin inicial**: `admin / 5896457`.
 
 ---
-
-##  Estructura del proyecto
-
-retrocloud/
-├── app/ # Backend FastAPI
-│ ├── main.py
-│ ├── auth.py
-│ ├── ddb.py
-│ ├── requirements.txt
-│ └── .env.example
-├── scripts/ # Scripts PowerShell usados por CodeDeploy
-│ ├── install.ps1
-│ ├── start.ps1
-│ ├── stop.ps1
-│ ├── rclone.conf.template
-│ └── windows_userdata.ps1
-├── infra/ # (Opcional) Terraform de infraestructura
-│ ├── vpc.tf, s3.tf, ec2.tf, ddb.tf, codedeploy.tf...
-├── .github/
-│ └── workflows/
-│ └── deploy.yml # Workflow de CI/CD
-├── appspec.yml # Configuración de CodeDeploy
-└── README.md
-
 ---
 
 ##  Despliegue Automático (CI/CD)
