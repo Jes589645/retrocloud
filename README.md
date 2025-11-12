@@ -113,7 +113,7 @@ El workflow obtiene las credenciales desde el **Environment `.env`**:
 
 ---
 
-## 🕸️ Acceso al sistema
+##  Acceso al sistema
 
 1. Accede a la API:  
    `http://<Elastic-IP>:8080/`
