@@ -1,0 +1,7 @@
+.env
+/infra/terraform.tfstate
+/infra/terraform.tfstate.backup
+/infra/terraform.lock.hcl
+roms.zip
+/backend/venv
+/infra/.terraform

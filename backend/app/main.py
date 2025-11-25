@@ -1,140 +1,87 @@
-from datetime import timedelta
+import os
+import time
 from typing import List
 
-from fastapi import FastAPI, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy.orm import Session
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
 
-from .db import Base, engine, get_db
-from .models import User, Game, GameSession, GameVM
-from .auth import (
-    authenticate_user,
-    create_access_token,
-    get_current_user,
-    get_password_hash,
-)
-from .orchestrator import get_or_create_vm, register_activity
+from pydantic import BaseModel
 
-Base.metadata.create_all(bind=engine)
+from .orchestrator import GameOrchestrator
+
+# Cargar variables de entorno desde backend/.env
+load_dotenv()
 
 app = FastAPI(title="RetroCloud API")
 
-
-# ======== AUTH =========
-
-@app.post("/auth/register")
-def register(username: str, password: str, db: Session = Depends(get_db)):
-    existing = db.query(User).filter(User.username == username).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Username already taken")
-
-    user = User(username=username, hashed_password=get_password_hash(password))
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    return {"id": user.id, "username": user.username}
+# ----- Modelos Pydantic -----
 
 
-@app.post("/auth/login")
-def login(
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    db: Session = Depends(get_db),
-):
-    user = authenticate_user(db, form_data.username, form_data.password)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-        )
-
-    access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=timedelta(minutes=60)
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
+class Game(BaseModel):
+    id: int
+    name: str
+    console: str
 
 
-# ======== GAMES =========
-
-@app.on_event("startup")
-def seed_games():
-    db = next(get_db())
-    # Si ya hay juegos, no siembra
-    if db.query(Game).count() > 0:
-        return
-    games = [
-        Game(name="Super Mario World", slug="super-mario-world", max_sessions_per_vm=1),
-        Game(name="Sonic the Hedgehog", slug="sonic-1", max_sessions_per_vm=1),
-        Game(name="Street Fighter II", slug="sf2", max_sessions_per_vm=1),
-        Game(name="Mega Man X", slug="mmx", max_sessions_per_vm=1),
-    ]
-    db.add_all(games)
-    db.commit()
+class GameSession(BaseModel):
+    session_id: int
+    game_id: int
+    instance_id: str
+    public_ip: str
+    state: str
 
 
-@app.get("/games")
-def list_games(db: Session = Depends(get_db)):
-    games = db.query(Game).all()
-    return [{"id": g.id, "name": g.name, "slug": g.slug} for g in games]
+# Catálogo estático por ahora (todo SNES, como definiste el proyecto)
+GAMES: List[Game] = [
+    Game(id=1, name="Super Mario World", console="SNES"),
+    Game(id=2, name="The Legend of Zelda: A Link to the Past", console="SNES"),
+    Game(id=3, name="Donkey Kong Country", console="SNES"),
+]
+
+# ----- Orquestador EC2 -----
+
+GAME_AMI_ID = os.getenv("GAME_AMI_ID")
+GAME_AWS_REGION = os.getenv("GAME_AWS_REGION", "us-east-2")
+GAME_INSTANCE_TYPE = os.getenv("GAME_INSTANCE_TYPE", "m7i-flex.large")
+
+orchestrator = GameOrchestrator(
+    ami_id=GAME_AMI_ID,
+    region_name=GAME_AWS_REGION,
+    instance_type=GAME_INSTANCE_TYPE,
+)
 
 
-# ======== GAME SESSIONS =========
+@app.get("/")
+def root():
+    return {"message": "RetroCloud backend is running"}
 
-@app.post("/games/{game_id}/sessions")
-def start_session(
-    game_id: int,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    game = db.query(Game).filter(Game.id == game_id).first()
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/games", response_model=List[Game])
+def list_games():
+    return GAMES
+
+
+@app.post("/games/{game_id}/sessions", response_model=GameSession)
+def create_game_session(game_id: int):
+    # Buscar el juego
+    game = next((g for g in GAMES if g.id == game_id), None)
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
 
-    # Obtener o crear VM
-    vm = get_or_create_vm(db, max_sessions=game.max_sessions_per_vm)
-    vm.current_sessions += 1
-    register_activity(db, vm)
-    db.commit()
-    db.refresh(vm)
+    # Por ahora, user_id fijo (luego lo sacaremos del token JWT)
+    user_id = 1
 
-    # Aquí normalmente construirías la URL de streaming real (NICE DCV / etc.)
-    streaming_url = f"https://placeholder-streaming/{vm.instance_id}/{game.slug}"
+    vm_info = orchestrator.create_game_vm(user_id=user_id, game_id=game_id)
 
-    session = GameSession(
-        user_id=user.id,
-        game_id=game.id,
-        vm_id=vm.id,
-        streaming_url=streaming_url,
+    return GameSession(
+        session_id=int(time.time()),  # placeholder
+        game_id=game_id,
+        instance_id=vm_info["instance_id"],
+        public_ip=vm_info["public_ip"],
+        state=vm_info["state"],
     )
-    db.add(session)
-    db.commit()
-    db.refresh(session)
-
-    return {
-        "session_id": session.id,
-        "streaming_url": session.streaming_url,
-        "vm_instance_id": vm.instance_id,
-    }
-
-
-@app.post("/sessions/{session_id}/end")
-def end_session(
-    session_id: int,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    session = (
-        db.query(GameSession)
-        .filter(GameSession.id == session_id, GameSession.user_id == user.id)
-        .first()
-    )
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    session.ended_at = __import__("datetime").datetime.utcnow()
-
-    vm = session.vm
-    if vm.current_sessions > 0:
-        vm.current_sessions -= 1
-    register_activity(db, vm)
-    db.commit()
-    return {"detail": "Session ended"}

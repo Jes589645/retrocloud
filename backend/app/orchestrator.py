@@ -1,88 +1,83 @@
-from datetime import datetime, timedelta
-from typing import Optional
+import os
+import time
+from typing import Optional, Dict, Any
 
 import boto3
-from sqlalchemy.orm import Session
-
-from .models import GameVM
-
-# Aquí fijo algunos valores; luego puedes pasarlos por env
-AWS_REGION = "us-east-2"
-INSTANCE_TYPE = "m7i-flex.large"
-AMI_ID = None  # Puedes crear una AMI específica para VMs de juego
-IDLE_TIMEOUT_MINUTES = 20
-
-ec2 = boto3.client("ec2", region_name=AWS_REGION)
 
 
-def get_or_create_vm(db: Session, max_sessions: int) -> GameVM:
+class GameOrchestrator:
     """
-    Busca una VM con capacidad disponible.
-    Si no hay, crea una nueva instancia EC2 y la registra.
+    Pequeño orquestador para crear VMs de juego en EC2 usando una AMI específica.
     """
-    vm = (
-        db.query(GameVM)
-        .filter(GameVM.status == "running", GameVM.current_sessions < GameVM.max_sessions)
-        .first()
-    )
-    if vm:
-        return vm
 
-    # Crear una nueva instancia EC2 para juegos (simplificado)
-    if AMI_ID is None:
-        # En un PoC, podrías usar la misma AMI de Ubuntu y luego configurar manualmente
-        raise RuntimeError("Debes configurar AMI_ID para las VMs de juego")
+    def __init__(
+        self,
+        ami_id: str,
+        region_name: str = "us-east-2",
+        instance_type: str = "m7i-flex.large",
+    ) -> None:
+        if not ami_id:
+            raise ValueError("GAME_AMI_ID no está configurado en el entorno")
 
-    response = ec2.run_instances(
-        ImageId=AMI_ID,
-        InstanceType=INSTANCE_TYPE,
-        MinCount=1,
-        MaxCount=1,
-        # key_name y sg se pueden fijar por LaunchTemplate o parámetros
-    )
-    instance = response["Instances"][0]
-    instance_id = instance["InstanceId"]
+        self.ami_id = ami_id
+        self.region_name = region_name
+        self.instance_type = instance_type
 
-    vm = GameVM(
-        instance_id=instance_id,
-        status="starting",
-        current_sessions=0,
-        max_sessions=max_sessions,
-        last_activity=datetime.utcnow(),
-    )
-    db.add(vm)
-    db.commit()
-    db.refresh(vm)
-    return vm
+        # La sesión usará tus credenciales configuradas con `aws configure`
+        self.session = boto3.Session(region_name=self.region_name)
+        self.ec2_resource = self.session.resource("ec2")
 
+    def _build_run_instances_params(self, user_id: int, game_id: int) -> Dict[str, Any]:
+        """
+        Construye el diccionario de parámetros para ec2.create_instances()
+        leyendo datos de variables de entorno.
+        """
+        params: Dict[str, Any] = {
+            "ImageId": self.ami_id,
+            "InstanceType": self.instance_type,
+            "MinCount": 1,
+            "MaxCount": 1,
+            "TagSpecifications": [
+                {
+                    "ResourceType": "instance",
+                    "Tags": [
+                        {"Key": "Project", "Value": "retrocloud"},
+                        {"Key": "GameId", "Value": str(game_id)},
+                        {"Key": "UserId", "Value": str(user_id)},
+                    ],
+                }
+            ],
+        }
 
-def mark_vm_running(db: Session, vm: GameVM):
-    vm.status = "running"
-    db.commit()
+        key_name = os.getenv("GAME_KEYPAIR_NAME")
+        if key_name:
+            params["KeyName"] = key_name
 
+        sg_ids = os.getenv("GAME_SG_IDS")
+        if sg_ids:
+            params["SecurityGroupIds"] = [s.strip() for s in sg_ids.split(",") if s.strip()]
 
-def register_activity(db: Session, vm: GameVM):
-    vm.last_activity = datetime.utcnow()
-    db.commit()
+        subnet_id = os.getenv("GAME_SUBNET_ID")
+        if subnet_id:
+            params["SubnetId"] = subnet_id
 
+        return params
 
-def cleanup_idle_vms(db: Session):
-    threshold = datetime.utcnow() - timedelta(minutes=IDLE_TIMEOUT_MINUTES)
-    idle_vms = (
-        db.query(GameVM)
-        .filter(
-            GameVM.current_sessions == 0,
-            GameVM.status == "running",
-            GameVM.last_activity < threshold,
-        )
-        .all()
-    )
+    def create_game_vm(self, user_id: int, game_id: int) -> Dict[str, Any]:
+        """
+        Crea una instancia EC2 a partir de la AMI de juegos y espera a que arranque.
+        Devuelve instance_id y public_ip.
+        """
+        params = self._build_run_instances_params(user_id=user_id, game_id=game_id)
+        instances = self.ec2_resource.create_instances(**params)
+        instance = instances[0]
 
-    for vm in idle_vms:
-        try:
-            ec2.stop_instances(InstanceIds=[vm.instance_id])
-            vm.status = "stopped"
-            db.commit()
-        except Exception:
-            # Podrías loguear el error
-            pass
+        # Esperar a que esté en running
+        instance.wait_until_running()
+        instance.reload()
+
+        return {
+            "instance_id": instance.id,
+            "public_ip": instance.public_ip_address,
+            "state": instance.state.get("Name"),
+        }
