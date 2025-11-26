@@ -1,15 +1,12 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 
-from pydantic import BaseModel
-from pathlib import Path
-import json
-import time
 from typing import List, Optional
 from pydantic import BaseModel
 from pathlib import Path
 import json
-
+import time
+import os
 
 from .orchestrator import GameOrchestrator
 
@@ -40,6 +37,7 @@ if CATALOG_PATH.exists():
         with CATALOG_PATH.open("r", encoding="utf-8") as f:
             raw_games = json.load(f)
         GAMES = [Game(**g) for g in raw_games]
+        print(f"[INFO] Catálogo cargado: {len(GAMES)} juegos.")
     except Exception as e:
         print(f"[WARN] No se pudo cargar games_catalog.json: {e}")
         GAMES = []
@@ -66,7 +64,15 @@ def debug_catalog():
 #                   GAME ORCHESTRATION
 # ============================================================
 
-orchestrator = GameOrchestrator()
+# Leemos el GAME_AMI_ID desde las variables de entorno
+GAME_AMI_ID = os.getenv("GAME_AMI_ID")
+if not GAME_AMI_ID:
+    # En la EC2 esto viene de systemd (Environment="GAME_AMI_ID=...")
+    # En local, si no está, se lanza un error claro.
+    raise ValueError("GAME_AMI_ID no está configurado en el entorno")
+
+# GameOrchestrator ahora exige ami_id como argumento
+orchestrator = GameOrchestrator(GAME_AMI_ID)
 
 
 @app.post("/games/{game_id}/session")
@@ -135,7 +141,7 @@ def ui():
             </style>
         </head>
         <body>
-            <h1>🎮 RetroCloud</h1>
+            <h1>RetroCloud</h1>
             <div id="games" class="grid"></div>
 
             <script>
