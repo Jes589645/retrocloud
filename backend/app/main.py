@@ -85,3 +85,7 @@ def create_game_session(game_id: int):
         public_ip=vm_info["public_ip"],
         state=vm_info["state"],
     )
+
+@app.get("/test-deploy")
+def test_deploy():
+    return {"status": "deployment OK"}
