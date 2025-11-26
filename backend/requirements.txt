@@ -1,7 +1,8 @@
 fastapi
 uvicorn[standard]
-pydantic
-sqlalchemy
-passlib[bcrypt]
-python-jose[cryptography]
 boto3
+python-dotenv
+python-jose[cryptography]
+passlib[bcrypt]
+pydantic
+SQLAlchemy
