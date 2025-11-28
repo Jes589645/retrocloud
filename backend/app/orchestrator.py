@@ -3,6 +3,7 @@ import time
 from typing import Tuple
 
 import boto3
+from botocore.exceptions import ClientError
 
 
 class GameOrchestrator:
@@ -24,8 +25,15 @@ class GameOrchestrator:
         self.instance_type = instance_type or os.getenv("GAME_INSTANCE_TYPE", "m7i-flex.large")
 
         # Nombre de keypair (en AWS) para poder acceder por SSH/RDP si hace falta
-        # Usa el que ya tienes creado: keypairinfti
         self.key_name = os.getenv("GAME_KEY_NAME", "keypairinfti")
+
+        # Subnet y SG donde vamos a crear las VMs de juego
+        self.subnet_id = os.getenv("GAME_SUBNET_ID")
+        sg_ids_raw = os.getenv("GAME_SECURITY_GROUP_IDS", "")
+        self.security_group_ids = [sg.strip() for sg in sg_ids_raw.split(",") if sg.strip()]
+
+        if not self.subnet_id or not self.security_group_ids:
+            raise ValueError("GAME_SUBNET_ID o GAME_SECURITY_GROUP_IDS no están configurados en el entorno")
 
         # Cliente EC2
         self.ec2 = boto3.client("ec2", region_name=self.region_name)
@@ -61,7 +69,6 @@ su - ubuntu -c 'DISPLAY=:0 flatpak run org.libretro.RetroArch "{rom_path}"' &
 
         print(f"[INFO] Lanzando VM de juego con AMI {self.ami_id}, ROM {rom_path}")
 
-        # Llamada a run_instances SIN TagSpecifications, para no requerir ec2:CreateTags
         run_args = {
             "ImageId": self.ami_id,
             "InstanceType": self.instance_type,
@@ -69,6 +76,8 @@ su - ubuntu -c 'DISPLAY=:0 flatpak run org.libretro.RetroArch "{rom_path}"' &
             "MaxCount": 1,
             "KeyName": self.key_name,
             "UserData": user_data_script,
+            "SubnetId": self.subnet_id,
+            "SecurityGroupIds": self.security_group_ids,
         }
 
         response = self.ec2.run_instances(**run_args)
@@ -91,3 +100,14 @@ su - ubuntu -c 'DISPLAY=:0 flatpak run org.libretro.RetroArch "{rom_path}"' &
         print(f"[INFO] Instancia {instance_id} en ejecución con IP pública {public_ip}")
 
         return instance_id, public_ip
+
+    def terminate_game_vm(self, instance_id: str) -> None:
+        """
+        Termina (apaga y destruye) la instancia de juego indicada.
+        """
+        try:
+            print(f"[INFO] Terminando instancia de juego {instance_id}")
+            self.ec2.terminate_instances(InstanceIds=[instance_id])
+        except ClientError as e:
+            # Logueamos pero no reventamos la API por esto
+            print(f"[WARN] Error terminando instancia {instance_id}: {e}")

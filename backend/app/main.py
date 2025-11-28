@@ -64,14 +64,10 @@ def debug_catalog():
 #                   GAME ORCHESTRATION
 # ============================================================
 
-# Leemos el GAME_AMI_ID desde las variables de entorno
 GAME_AMI_ID = os.getenv("GAME_AMI_ID")
 if not GAME_AMI_ID:
-    # En la EC2 esto viene de systemd (Environment="GAME_AMI_ID=...")
-    # En local, si no está, se lanza un error claro.
     raise ValueError("GAME_AMI_ID no está configurado en el entorno")
 
-# Instanciamos el orquestador con la AMI de juegos
 orchestrator = GameOrchestrator(GAME_AMI_ID)
 
 
@@ -100,8 +96,22 @@ def create_game_session(game_id: int):
         "message": "Game VM creada correctamente",
         "instance_id": instance_id,
         "public_ip": public_ip,
-        "connect_url": f"http://{public_ip}:3389",
+        # Nota: 3389 es RDP, no HTTP. El cliente debe ser Escritorio remoto.
+        "connect_host": public_ip,
+        "connect_port": 3389,
         "game": game,
+    }
+
+
+@app.delete("/sessions/{instance_id}")
+def terminate_session(instance_id: str):
+    """
+    Termina la instancia de juego asociada a una sesión.
+    """
+    orchestrator.terminate_game_vm(instance_id)
+    return {
+        "message": "Sesión terminada, instancia en proceso de apagado",
+        "instance_id": instance_id,
     }
 
 
@@ -147,11 +157,21 @@ def ui():
                     color: white;
                     border-radius: 5px;
                     cursor: pointer;
+                    margin-top: 8px;
+                }
+                .small {
+                    font-size: 12px;
+                    color: #bbb;
+                    margin-top: 8px;
                 }
             </style>
         </head>
         <body>
             <h1>RetroCloud</h1>
+            <p class="small">
+                Nota: el puerto 3389 es para Escritorio remoto (RDP). No se abre en el navegador,
+                debes usar el cliente de Escritorio remoto de tu sistema.
+            </p>
             <div id="games" class="grid"></div>
 
             <script>
@@ -169,24 +189,44 @@ def ui():
                             <h3>${g.name}</h3>
                             <p><b>Consola:</b> ${g.console}</p>
                             <button onclick="play(${g.id})">Jugar</button>
+                            <div id="session-${g.id}" class="small"></div>
                         `;
                         container.appendChild(card);
                     });
                 }
 
                 async function play(id) {
-                    alert("Creando VM de juego... espera 20-30s");
+                    alert("Creando VM de juego... espera 20-40s antes de conectarte por RDP.");
 
                     const resp = await fetch(`/games/${id}/session`, { method: "POST" });
                     const data = await resp.json();
 
+                    const sessionDiv = document.getElementById(`session-${id}`);
+
                     if (data.public_ip) {
-                        alert("Tu VM está lista en: " + data.public_ip + "\\nConéctate por RDP al puerto 3389.");
+                        sessionDiv.innerHTML = `
+                            Instancia: <b>${data.instance_id}</b><br/>
+                            IP: <b>${data.public_ip}:3389</b><br/>
+                            1) Abre el cliente de Escritorio remoto (RDP).<br/>
+                            2) Conéctate a: <b>${data.public_ip}:3389</b><br/>
+                            <button onclick="endSession('${data.instance_id}', ${id})">Cerrar sesión</button>
+                        `;
                     } else if (data.detail) {
-                        alert("Error: " + data.detail);
+                        sessionDiv.innerHTML = "Error: " + data.detail;
                     } else {
-                        alert("Se creó la sesión, pero no se obtuvo IP pública todavía.");
+                        sessionDiv.innerHTML = "Sesión creada, pero no se obtuvo IP pública.";
                     }
+                }
+
+                async function endSession(instanceId, gameId) {
+                    const ok = confirm("Esto apagará la VM de juego. ¿Continuar?");
+                    if (!ok) return;
+
+                    const resp = await fetch(`/sessions/${instanceId}`, { method: "DELETE" });
+                    const data = await resp.json();
+
+                    const sessionDiv = document.getElementById(`session-${gameId}`);
+                    sessionDiv.innerHTML = data.message + " (ID: " + instanceId + ")";
                 }
 
                 loadGames();
