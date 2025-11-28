@@ -71,20 +71,30 @@ if not GAME_AMI_ID:
     # En local, si no está, se lanza un error claro.
     raise ValueError("GAME_AMI_ID no está configurado en el entorno")
 
-# GameOrchestrator ahora exige ami_id como argumento
+# Instanciamos el orquestador con la AMI de juegos
 orchestrator = GameOrchestrator(GAME_AMI_ID)
 
 
 @app.post("/games/{game_id}/session")
 def create_game_session(game_id: int):
     """
-    Crea una instancia EC2 basada en la AMI retro gaming y devuelve su IP pública
+    Crea una instancia EC2 basada en la AMI retro gaming y devuelve su IP pública.
+    Además, le pasa al orquestador el nombre de la ROM y la consola.
     """
     game = next((g for g in GAMES if g.id == game_id), None)
     if not game:
         raise HTTPException(status_code=404, detail="Juego no encontrado")
 
-    instance_id, public_ip = orchestrator.launch_game_vm()
+    if not game.filename:
+        raise HTTPException(
+            status_code=500,
+            detail="Juego sin filename definido en el catálogo",
+        )
+
+    instance_id, public_ip = orchestrator.launch_game_vm(
+        rom_filename=game.filename,
+        console=game.console,
+    )
 
     return {
         "message": "Game VM creada correctamente",
@@ -170,7 +180,13 @@ def ui():
                     const resp = await fetch(`/games/${id}/session`, { method: "POST" });
                     const data = await resp.json();
 
-                    alert("Tu VM está lista: " + data.public_ip);
+                    if (data.public_ip) {
+                        alert("Tu VM está lista en: " + data.public_ip + "\\nConéctate por RDP al puerto 3389.");
+                    } else if (data.detail) {
+                        alert("Error: " + data.detail);
+                    } else {
+                        alert("Se creó la sesión, pero no se obtuvo IP pública todavía.");
+                    }
                 }
 
                 loadGames();

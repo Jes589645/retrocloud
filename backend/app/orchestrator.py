@@ -1,83 +1,105 @@
 import os
 import time
-from typing import Optional, Dict, Any
+from typing import Tuple
 
 import boto3
 
 
 class GameOrchestrator:
-    """
-    Pequeño orquestador para crear VMs de juego en EC2 usando una AMI específica.
-    """
-
     def __init__(
         self,
         ami_id: str,
-        region_name: str = "us-east-2",
-        instance_type: str = "m7i-flex.large",
-    ) -> None:
-        if not ami_id:
-            raise ValueError("GAME_AMI_ID no está configurado en el entorno")
+        region_name: str = None,
+        instance_type: str = None,
+    ):
+        """
+        Orquestador de VMs de juego.
 
+        :param ami_id: ID de la AMI de juegos (GAME_AMI_ID)
+        :param region_name: Región AWS, por defecto GAME_AWS_REGION o us-east-2
+        :param instance_type: Tipo de instancia, por defecto GAME_INSTANCE_TYPE o m7i-flex.large
+        """
         self.ami_id = ami_id
-        self.region_name = region_name
-        self.instance_type = instance_type
+        self.region_name = region_name or os.getenv("GAME_AWS_REGION", "us-east-2")
+        self.instance_type = instance_type or os.getenv("GAME_INSTANCE_TYPE", "m7i-flex.large")
 
-        # La sesión usará tus credenciales configuradas con `aws configure`
-        self.session = boto3.Session(region_name=self.region_name)
-        self.ec2_resource = self.session.resource("ec2")
+        # Nombre de keypair (en AWS) para poder acceder por SSH/RDP si hace falta
+        # Usa el que ya tienes creado: keypairinfti
+        self.key_name = os.getenv("GAME_KEY_NAME", "keypairinfti")
 
-    def _build_run_instances_params(self, user_id: int, game_id: int) -> Dict[str, Any]:
+        # Cliente EC2
+        self.ec2 = boto3.client("ec2", region_name=self.region_name)
+
+    def launch_game_vm(self, rom_filename: str, console: str = "SNES") -> Tuple[str, str]:
         """
-        Construye el diccionario de parámetros para ec2.create_instances()
-        leyendo datos de variables de entorno.
+        Lanza una nueva instancia de juego basada en la AMI y arranca RetroArch
+        con la ROM indicada.
+
+        :param rom_filename: Nombre del archivo de la ROM (por ejemplo "ActRaiser 2.smc")
+        :param console: Nombre de la consola (por ejemplo "SNES")
+        :return: (instance_id, public_ip)
         """
-        params: Dict[str, Any] = {
+
+        # Ruta donde están las ROMs dentro de la VM de juego.
+        # En tu AMI las dejaste en /home/ubuntu/roms/roms/snes/
+        rom_path = f"/home/ubuntu/roms/roms/snes/{rom_filename}"
+
+        # Script de user-data que se ejecuta en el primer arranque de la instancia.
+        # Ajusta el comando si en tu VM el comando correcto para lanzar RetroArch es distinto.
+        user_data_script = f"""#!/bin/bash
+# Esperar a que el sistema termine de levantar servicios básicos
+sleep 20
+
+# Exportar DISPLAY para el entorno gráfico
+export DISPLAY=:0
+
+# Lanzar RetroArch como el usuario ubuntu con la ROM especificada.
+# Si necesitas especificar un core concreto, añade -L /ruta/al/core_libretro.so.
+su - ubuntu -c 'DISPLAY=:0 flatpak run org.libretro.RetroArch "{rom_path}"' &
+
+"""
+
+        print(f"[INFO] Lanzando VM de juego con AMI {self.ami_id}, ROM {rom_path}")
+
+        # Llamada a run_instances.
+        # Asume VPC y SG por defecto; si en tu entorno necesitas SubnetId/SecurityGroupIds,
+        # puedes leerlos de variables de entorno y agregarlos aquí.
+        run_args = {
             "ImageId": self.ami_id,
             "InstanceType": self.instance_type,
             "MinCount": 1,
             "MaxCount": 1,
+            "KeyName": self.key_name,
+            "UserData": user_data_script,
             "TagSpecifications": [
                 {
                     "ResourceType": "instance",
                     "Tags": [
+                        {"Key": "Name", "Value": "retrocloud-game"},
                         {"Key": "Project", "Value": "retrocloud"},
-                        {"Key": "GameId", "Value": str(game_id)},
-                        {"Key": "UserId", "Value": str(user_id)},
+                        {"Key": "Console", "Value": console},
                     ],
                 }
             ],
         }
 
-        key_name = os.getenv("GAME_KEYPAIR_NAME")
-        if key_name:
-            params["KeyName"] = key_name
+        response = self.ec2.run_instances(**run_args)
 
-        sg_ids = os.getenv("GAME_SG_IDS")
-        if sg_ids:
-            params["SecurityGroupIds"] = [s.strip() for s in sg_ids.split(",") if s.strip()]
+        instance = response["Instances"][0]
+        instance_id = instance["InstanceId"]
 
-        subnet_id = os.getenv("GAME_SUBNET_ID")
-        if subnet_id:
-            params["SubnetId"] = subnet_id
+        print(f"[INFO] Instancia de juego creada: {instance_id}, esperando a que esté 'running'...")
 
-        return params
+        # Esperar a que la instancia pase a estado "running"
+        waiter = self.ec2.get_waiter("instance_running")
+        waiter.wait(InstanceIds=[instance_id])
 
-    def create_game_vm(self, user_id: int, game_id: int) -> Dict[str, Any]:
-        """
-        Crea una instancia EC2 a partir de la AMI de juegos y espera a que arranque.
-        Devuelve instance_id y public_ip.
-        """
-        params = self._build_run_instances_params(user_id=user_id, game_id=game_id)
-        instances = self.ec2_resource.create_instances(**params)
-        instance = instances[0]
+        # Esperar un poco más a que reciba IP pública
+        time.sleep(5)
 
-        # Esperar a que esté en running
-        instance.wait_until_running()
-        instance.reload()
+        desc = self.ec2.describe_instances(InstanceIds=[instance_id])
+        public_ip = desc["Reservations"][0]["Instances"][0].get("PublicIpAddress")
 
-        return {
-            "instance_id": instance.id,
-            "public_ip": instance.public_ip_address,
-            "state": instance.state.get("Name"),
-        }
+        print(f"[INFO] Instancia {instance_id} en ejecución con IP pública {public_ip}")
+
+        return instance_id, public_ip
