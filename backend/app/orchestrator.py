@@ -61,9 +61,7 @@ su - ubuntu -c 'DISPLAY=:0 flatpak run org.libretro.RetroArch "{rom_path}"' &
 
         print(f"[INFO] Lanzando VM de juego con AMI {self.ami_id}, ROM {rom_path}")
 
-        # Llamada a run_instances.
-        # Asume VPC y SG por defecto; si en tu entorno necesitas SubnetId/SecurityGroupIds,
-        # puedes leerlos de variables de entorno y agregarlos aquí.
+        # Llamada a run_instances SIN TagSpecifications, para no requerir ec2:CreateTags
         run_args = {
             "ImageId": self.ami_id,
             "InstanceType": self.instance_type,
@@ -71,16 +69,6 @@ su - ubuntu -c 'DISPLAY=:0 flatpak run org.libretro.RetroArch "{rom_path}"' &
             "MaxCount": 1,
             "KeyName": self.key_name,
             "UserData": user_data_script,
-            "TagSpecifications": [
-                {
-                    "ResourceType": "instance",
-                    "Tags": [
-                        {"Key": "Name", "Value": "retrocloud-game"},
-                        {"Key": "Project", "Value": "retrocloud"},
-                        {"Key": "Console", "Value": console},
-                    ],
-                }
-            ],
         }
 
         response = self.ec2.run_instances(**run_args)
