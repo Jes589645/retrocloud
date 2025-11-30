@@ -1,236 +1,109 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
-
-from typing import List, Optional
-from pydantic import BaseModel
-from pathlib import Path
-import json
+import boto3
 import time
-import os
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from botocore.exceptions import ClientError
 
-from .orchestrator import GameOrchestrator
+app = FastAPI()
 
+# Permitir CORS para que el Frontend (React) pueda hablar con este Backend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-app = FastAPI(title="RetroCloud API")
+ec2 = boto3.client('ec2', region_name='us-east-2')
 
+# --- TUS CONFIGURACIONES DE PRODUCCIÓN ---
+AMI_ID = "ami-0a6b5b6ae84396647"
+SUBNET_ID = "subnet-09a1953a7d957d51b"
+SECURITY_GROUP_ID = "sg-0487e9a61303171db"
+KEY_NAME = "keypairinfti"
 
-# ============================================================
-#                   GAME MODEL + CATALOG LOAD
-# ============================================================
+class GameSession(BaseModel):
+    game_filename: str # Ej: "SuperMarioWorld.smc"
 
-class Game(BaseModel):
-    id: int
-    name: str
-    console: str
-    filename: Optional[str] = None
+@app.post("/games/session")
+def create_session(session: GameSession):
+    print(f"🚀 Lanzando sesión para: {session.game_filename}")
+    
+    # Script Maestro que se ejecutará DENTRO de la nueva VM al nacer
+    user_data_script = f"""<powershell>
+    # 1. Definir variables
+    $Pass = "RetroCloudRules!2025"
+    $RetroExe = "C:\\Program Files\\RetroArch\\retroarch.exe"
+    $Core = "C:\\Program Files\\RetroArch\\cores\\snes9x_libretro.dll"
+    $Rom = "C:\\RetroCloud\\Roms\\{session.game_filename}"
 
+    # 2. Configurar Usuario y Autologin (Crítico para DCV)
+    net user Administrator $Pass
+    $Reg = "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"
+    New-ItemProperty -Path $Reg -Name "AutoAdminLogon" -Value "1" -PropertyType String -Force
+    New-ItemProperty -Path $Reg -Name "DefaultUserName" -Value "Administrator" -PropertyType String -Force
+    New-ItemProperty -Path $Reg -Name "DefaultPassword" -Value $Pass -PropertyType String -Force
 
-# Ruta al JSON junto a main.py
-CATALOG_PATH = Path(__file__).with_name("games_catalog.json")
+    # 3. Abrir Firewall para DCV (Puerto 8443 TCP)
+    New-NetFirewallRule -DisplayName "DCV Web Stream" -Direction Inbound -LocalPort 8443 -Protocol TCP -Action Allow
 
-GAMES: List[Game] = []
+    # 4. Programar el Juego al Inicio
+    # Usamos una Scheduled Task para que arranque en el escritorio interactivo
+    $Arg = "-L `"$Core`" `"$Rom`" -f"
+    $Action = New-ScheduledTaskAction -Execute $RetroExe -Argument $Arg
+    $Trigger = New-ScheduledTaskTrigger -AtLogOn
+    Register-ScheduledTask -TaskName "LaunchGame" -Trigger $Trigger -Action $Action -User "Administrator" -RunLevel Highest
 
-# Intentamos cargar el catálogo desde JSON, pero si no existe
-# o está mal, dejamos la lista vacía (para no tumbar el backend).
-if CATALOG_PATH.exists():
+    # 5. Asegurar que el servicio DCV reinicie para tomar la nueva password
+    Restart-Service dcvserver
+    </powershell>
+    """
+
     try:
-        with CATALOG_PATH.open("r", encoding="utf-8") as f:
-            raw_games = json.load(f)
-        GAMES = [Game(**g) for g in raw_games]
-        print(f"[INFO] Catálogo cargado: {len(GAMES)} juegos.")
-    except Exception as e:
-        print(f"[WARN] No se pudo cargar games_catalog.json: {e}")
-        GAMES = []
-else:
-    print(f"[INFO] games_catalog.json no encontrado en {CATALOG_PATH}, catálogo vacío.")
-
-
-@app.get("/games", response_model=List[Game])
-def list_games():
-    return GAMES
-
-
-@app.get("/debug/catalog")
-def debug_catalog():
-    return {
-        "catalog_path": str(CATALOG_PATH),
-        "exists": CATALOG_PATH.exists(),
-        "count": len(GAMES),
-        "sample": [g.dict() for g in GAMES[:5]],
-    }
-
-
-# ============================================================
-#                   GAME ORCHESTRATION
-# ============================================================
-
-GAME_AMI_ID = os.getenv("GAME_AMI_ID")
-if not GAME_AMI_ID:
-    raise ValueError("GAME_AMI_ID no está configurado en el entorno")
-
-orchestrator = GameOrchestrator(GAME_AMI_ID)
-
-
-@app.post("/games/{game_id}/session")
-def create_game_session(game_id: int):
-    """
-    Crea una instancia EC2 basada en la AMI retro gaming y devuelve su IP pública.
-    Además, le pasa al orquestador el nombre de la ROM y la consola.
-    """
-    game = next((g for g in GAMES if g.id == game_id), None)
-    if not game:
-        raise HTTPException(status_code=404, detail="Juego no encontrado")
-
-    if not game.filename:
-        raise HTTPException(
-            status_code=500,
-            detail="Juego sin filename definido en el catálogo",
+        # Lanzar la instancia
+        instance = ec2.run_instances(
+            ImageId=AMI_ID,
+            InstanceType='m7i-flex.large', # Potencia suficiente
+            MinCount=1,
+            MaxCount=1,
+            KeyName=KEY_NAME,
+            SubnetId=SUBNET_ID,
+            SecurityGroupIds=[SECURITY_GROUP_ID],
+            UserData=user_data_script,
+            TagSpecifications=[{'ResourceType': 'instance', 'Tags': [{'Key': 'Name', 'Value': f'RetroSession-{session.game_filename}'}]}]
         )
+        
+        instance_id = instance['Instances'][0]['InstanceId']
+        print(f"⏳ Instancia {instance_id} creada. Esperando IP pública...")
+        
+        # Esperar brevemente a que AWS asigne la IP (esto es rápido)
+        waiter = ec2.get_waiter('instance_running')
+        waiter.wait(InstanceIds=[instance_id])
+        
+        desc = ec2.describe_instances(InstanceIds=[instance_id])
+        public_ip = desc['Reservations'][0]['Instances'][0].get('PublicIpAddress')
 
-    instance_id, public_ip = orchestrator.launch_game_vm(
-        rom_filename=game.filename,
-        console=game.console,
-    )
+        if not public_ip:
+            raise HTTPException(status_code=500, detail="No se asignó IP pública")
 
-    return {
-        "message": "Game VM creada correctamente",
-        "instance_id": instance_id,
-        "public_ip": public_ip,
-        # Nota: 3389 es RDP, no HTTP. El cliente debe ser Escritorio remoto.
-        "connect_host": public_ip,
-        "connect_port": 3389,
-        "game": game,
-    }
+        return {
+            "status": "booting",
+            "instance_id": instance_id,
+            "url": f"https://{public_ip}:8443",
+            "user": "Administrator",
+            "pass": "RetroCloudRules!2025",
+            "message": "Espera 2-3 minutos a que Windows inicie y luego abre el link."
+        }
 
+    except ClientError as e:
+        print(f"❌ Error AWS: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/sessions/{instance_id}")
-def terminate_session(instance_id: str):
-    """
-    Termina la instancia de juego asociada a una sesión.
-    """
-    orchestrator.terminate_game_vm(instance_id)
-    return {
-        "message": "Sesión terminada, instancia en proceso de apagado",
-        "instance_id": instance_id,
-    }
-
-
-# ============================================================
-#                   SIMPLE HEALTH CHECK
-# ============================================================
-
-@app.get("/health")
-def health():
-    return {"status": "ok", "timestamp": time.time()}
-
-
-# ============================================================
-#                   SIMPLE FRONTEND UI
-# ============================================================
-
-@app.get("/ui", response_class=HTMLResponse)
-def ui():
-    return """
-    <html>
-        <head>
-            <title>RetroCloud</title>
-            <style>
-                body { font-family: Arial; padding: 20px; background: #111; color: #eee; }
-                h1 { text-align: center; }
-                .grid {
-                    display: grid;
-                    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-                    gap: 20px;
-                    padding-top: 20px;
-                }
-                .card {
-                    background: #222;
-                    padding: 15px;
-                    border-radius: 10px;
-                    text-align: center;
-                    border: 1px solid #333;
-                }
-                button {
-                    padding: 10px 15px;
-                    background: #0f62fe;
-                    border: none;
-                    color: white;
-                    border-radius: 5px;
-                    cursor: pointer;
-                    margin-top: 8px;
-                }
-                .small {
-                    font-size: 12px;
-                    color: #bbb;
-                    margin-top: 8px;
-                }
-            </style>
-        </head>
-        <body>
-            <h1>RetroCloud</h1>
-            <p class="small">
-                Nota: el puerto 3389 es para Escritorio remoto (RDP). No se abre en el navegador,
-                debes usar el cliente de Escritorio remoto de tu sistema.
-            </p>
-            <div id="games" class="grid"></div>
-
-            <script>
-                async function loadGames() {
-                    const resp = await fetch("/games");
-                    const games = await resp.json();
-
-                    const container = document.getElementById("games");
-                    container.innerHTML = "";
-
-                    games.forEach(g => {
-                        const card = document.createElement("div");
-                        card.className = "card";
-                        card.innerHTML = `
-                            <h3>${g.name}</h3>
-                            <p><b>Consola:</b> ${g.console}</p>
-                            <button onclick="play(${g.id})">Jugar</button>
-                            <div id="session-${g.id}" class="small"></div>
-                        `;
-                        container.appendChild(card);
-                    });
-                }
-
-                async function play(id) {
-                    alert("Creando VM de juego... espera 20-40s antes de conectarte por RDP.");
-
-                    const resp = await fetch(`/games/${id}/session`, { method: "POST" });
-                    const data = await resp.json();
-
-                    const sessionDiv = document.getElementById(`session-${id}`);
-
-                    if (data.public_ip) {
-                        sessionDiv.innerHTML = `
-                            Instancia: <b>${data.instance_id}</b><br/>
-                            IP: <b>${data.public_ip}:3389</b><br/>
-                            1) Abre el cliente de Escritorio remoto (RDP).<br/>
-                            2) Conéctate a: <b>${data.public_ip}:3389</b><br/>
-                            <button onclick="endSession('${data.instance_id}', ${id})">Cerrar sesión</button>
-                        `;
-                    } else if (data.detail) {
-                        sessionDiv.innerHTML = "Error: " + data.detail;
-                    } else {
-                        sessionDiv.innerHTML = "Sesión creada, pero no se obtuvo IP pública.";
-                    }
-                }
-
-                async function endSession(instanceId, gameId) {
-                    const ok = confirm("Esto apagará la VM de juego. ¿Continuar?");
-                    if (!ok) return;
-
-                    const resp = await fetch(`/sessions/${instanceId}`, { method: "DELETE" });
-                    const data = await resp.json();
-
-                    const sessionDiv = document.getElementById(`session-${gameId}`);
-                    sessionDiv.innerHTML = data.message + " (ID: " + instanceId + ")";
-                }
-
-                loadGames();
-            </script>
-        </body>
-    </html>
-    """
+def end_session(instance_id: str):
+    try:
+        ec2.terminate_instances(InstanceIds=[instance_id])
+        return {"status": "terminated", "id": instance_id}
+    except ClientError as e:
+        raise HTTPException(status_code=500, detail=str(e))

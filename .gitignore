@@ -1,7 +1,12 @@
+# Ignorar binarios pesados y temporales
+roms/*.sfc
+roms/*.smc
+roms/*.zip
+__pycache__/
+*.pyc
+node_modules/
 .env
-/infra/terraform.tfstate
-/infra/terraform.tfstate.backup
-/infra/terraform.lock.hcl
-roms.zip
-/backend/venv
-/infra/.terraform
+venv/
+.terraform/
+*.tfstate
+*.tfstate.backup
