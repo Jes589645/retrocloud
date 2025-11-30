@@ -84,3 +84,26 @@ resource "aws_instance" "builder_vm" {
 output "builder_ip" {
   value = aws_instance.builder_vm.public_ip
 }
+
+# Servidor Web / API (Linux Ubuntu)
+resource "aws_instance" "control_plane" {
+  ami           = "ami-0e83be366243f524a" # Ubuntu 22.04 en us-east-2
+  instance_type = "t3.micro"
+  key_name      = "keypairinfti"
+  
+  subnet_id              = aws_subnet.retro_subnet.id
+  
+  # --- CORRECCIÓN AQUÍ ---
+  # Asegúrate de que coincida con el nombre del recurso SG definido más arriba.
+  # Si tu recurso se llama "builder_sg", usa builder_sg.id
+  vpc_security_group_ids = [aws_security_group.builder_sg.id] 
+  # -----------------------
+
+  user_data = <<-EOF
+              #!/bin/bash
+              apt-get update
+              apt-get install -y python3-pip python3-venv nodejs npm nginx git
+              EOF
+
+  tags = { Name = "RetroCloud-ControlPlane" }
+}
